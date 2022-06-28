@@ -303,12 +303,18 @@ class PythonParserGenerator(ParserGenerator, GrammarVisitor):
         name, call = self.callmakervisitor.visit(node.item)
         if node.name:
             name = node.name
+
         if not name:
-            self.print(call)
+            self.print(f"__last = {call}")
         else:
             if name != "cut":
                 name = self.dedupe(name)
-            self.print(f"({name} := {call})")
+
+            if call[-1] == ",":
+                self.print(f"{name} = {call[:-1]}")
+                self.print(f"__last = True")
+            else:
+                self.print(f"__last = {name} = {call}")
 
     def visit_Rhs(self, node: Rhs, is_loop: bool = False, is_gather: bool = False) -> None:
         if is_loop:
@@ -316,31 +322,38 @@ class PythonParserGenerator(ParserGenerator, GrammarVisitor):
         for alt in node.alts:
             self.visit(alt, is_loop=is_loop, is_gather=is_gather)
 
+    def _print_all_alts(self, node: Alt, has_invalid: bool, is_gather: bool) -> None:
+        self.print("__true_result = False")
+        self.print("while 1:  # for early false result as in the 'A and B'")
+        with self.indent():
+            if has_invalid:
+                self.print("if not self.call_invalid_rules: break")
+            for item in node.items:
+                self.visit(item)
+                if is_gather:
+                    self.print("if __last is None: break")
+                else:
+                    self.print("if not __last: break")
+            self.print("__true_result = True")
+            self.print("break")
+
     def visit_Alt(self, node: Alt, is_loop: bool, is_gather: bool) -> None:
         has_cut = any(isinstance(item.item, Cut) for item in node.items)
         has_invalid = self.invalidvisitor.visit(node)
+
         with self.local_variable_context():
             if has_cut:
                 self.print("cut = False")
-            if is_loop:
-                self.print("while (")
-            else:
-                self.print("if (")
-            with self.indent():
-                first = True
-                if has_invalid:
-                    self.print("self.call_invalid_rules")
-                    first = False
-                for item in node.items:
-                    if first:
-                        first = False
-                    else:
-                        self.print("and")
-                    self.visit(item)
-                    if is_gather:
-                        self.print("is not None")
 
-            self.print("):")
+            if is_loop:
+                self.print("while 1:")
+                with self.indent():
+                    self._print_all_alts(node, has_invalid, is_gather)
+                    self.print("if not __true_result: break")
+            else:
+                self._print_all_alts(node, has_invalid, is_gather)
+                self.print("if __true_result:")
+
             with self.indent():
                 action = node.action
                 if not action:
